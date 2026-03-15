@@ -1,0 +1,67 @@
+syntax = "proto3";
+
+package signify;
+
+option go_package = "./pkg/grpc_client/pb";
+
+// Telephony bridge service for PSTN call management
+service TelephonyBridge {
+    // Initiate an outbound call
+    rpc InitiateCall (CallRequest) returns (CallResponse);
+    
+    // End an active call
+    rpc EndCall (EndCallRequest) returns (EndCallResponse);
+    
+    // Stream audio bidirectionally during a call
+    rpc StreamAudio (stream AudioPacket) returns (stream AudioPacket);
+    
+    // Get call status
+    rpc GetCallStatus (CallStatusRequest) returns (CallStatusResponse);
+}
+
+// Request to initiate a call
+message CallRequest {
+    string user_id = 1;
+    string phone_number = 2;
+    string caller_id = 3;  // Optional: override caller ID
+}
+
+// Response for call initiation
+message CallResponse {
+    string call_id = 1;
+    string status = 2;  // "queued", "ringing", "in-progress", "failed"
+    string error = 3;   // Error message if failed
+}
+
+// Request to end a call
+message EndCallRequest {
+    string call_id = 1;
+}
+
+// Response for ending a call
+message EndCallResponse {
+    bool success = 1;
+    int32 duration_seconds = 2;
+}
+
+// Request for call status
+message CallStatusRequest {
+    string call_id = 1;
+}
+
+// Response for call status
+message CallStatusResponse {
+    string call_id = 1;
+    string status = 2;
+    int32 duration_seconds = 3;
+    string phone_number = 4;
+}
+
+// Bidirectional audio packet
+message AudioPacket {
+    bytes audio_data = 1;
+    int64 timestamp = 2;
+    string direction = 3;  // "inbound" or "outbound"
+    string format = 4;     // "pcm16", "mulaw", etc.
+    int32 sample_rate = 5;
+}

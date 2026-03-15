@@ -1,0 +1,72 @@
+name: signify_app
+description: "Signify – Bridge the gap between sign and speech."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Routing
+  go_router: ^14.2.0
+
+  # State management
+  flutter_riverpod: ^2.5.1
+  riverpod_annotation: ^2.3.5
+
+  # WebSocket
+  web_socket_channel: ^3.0.0
+
+  # HTTP
+  http: ^1.2.0
+
+  # Camera
+  camera: ^0.11.0+2
+  permission_handler: ^11.3.1
+
+  # ML Kit for landmark extraction
+  google_mlkit_pose_detection: ^0.11.0
+  google_mlkit_face_detection: ^0.10.0
+
+  # MediaPipe hand landmark detection (Android only, 21 pts per hand via JNI)
+  # v2.1.2+ requires camera ^0.11.3 (Dart >=3.9); v2.1.1 works with Flutter 3.32.x
+  hand_landmarker: 2.1.1
+
+  # Audio playback (TTS from backend)
+  audioplayers: ^6.1.0
+
+  # Microphone capture for STT test (PCM16 @ 16kHz → /ws/app/audio)
+  record: ^5.1.2
+
+  # WebRTC (kept for future use)
+  flutter_webrtc: ^0.12.4
+
+  # UI / animations
+  flutter_animate: ^4.5.0
+
+  # Shared prefs (settings persistence)
+  shared_preferences: ^2.3.2
+
+  # Utilities
+  intl: ^0.19.0
+  uuid: ^4.4.2
+
+  cupertino_icons: ^1.0.8
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+  build_runner: ^2.4.11
+  riverpod_generator: ^2.4.3
+
+dependency_overrides:
+  # record_linux 0.7.2 (resolved by record 5.2.1) doesn't implement startStream
+  # from record_platform_interface 1.5.0 — force the fixed version.
+  record_linux: ^1.3.0
+
+flutter:
+  uses-material-design: true

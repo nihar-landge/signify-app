@@ -1,0 +1,67 @@
+syntax = "proto3";
+
+package signify;
+
+option go_package = "./pkg/grpc_client/pb";
+
+// Sign recognition service for translating sign language to text
+service SignRecognition {
+    // Original image-based recognition (deprecated, kept for compatibility)
+    rpc RecognizeSign (RecognitionRequest) returns (RecognitionResponse);
+    
+    // Landmark-based streaming recognition for continuous signing
+    rpc StreamRecognizeLandmarks (stream LandmarkFrame) returns (stream TranslationChunk);
+    
+    // Single landmark frame recognition
+    rpc RecognizeLandmarks (LandmarkRecognitionRequest) returns (RecognitionResponse);
+    
+    // Full holistic recognition (543 landmarks flattened)
+    rpc RecognizeHolistic (HolisticRequest) returns (RecognitionResponse);
+}
+
+// Original image-based request (deprecated)
+message RecognitionRequest {
+    bytes image_data = 1;
+    int64 timestamp = 2;
+}
+
+// Landmark-based recognition request
+message LandmarkRecognitionRequest {
+    repeated float left_hand = 1;   // 63 values (21 points × 3 coords)
+    repeated float right_hand = 2;  // 63 values (21 points × 3 coords)
+    repeated float pose = 3;        // 99 values (33 points × 3 coords)
+    repeated float face = 4;        // Selected face landmark values
+    int64 timestamp = 5;
+    int32 sequence = 6;
+}
+
+// Single frame of landmark data for streaming
+message LandmarkFrame {
+    int64 timestamp = 1;
+    int32 sequence = 2;
+    repeated float left_hand = 3;   // 63 values (21 points × 3 coords)
+    repeated float right_hand = 4;  // 63 values (21 points × 3 coords)
+    repeated float pose = 5;        // 99 values (33 points × 3 coords)
+    repeated float face = 6;        // Selected face landmark values
+}
+
+// Full MediaPipe Holistic request (543 landmarks flattened)
+message HolisticRequest {
+    string session_id = 1;
+    repeated float landmarks = 2;   // 1629 values (543 points × 3 coords)
+    int64 timestamp = 3;
+}
+
+// Recognition response
+message RecognitionResponse {
+    string text = 1;
+    float confidence = 2;
+}
+
+// Translation chunk for streaming responses
+message TranslationChunk {
+    string text = 1;
+    bool is_final = 2;      // True if this is a finalized translation
+    float confidence = 3;
+    int64 timestamp = 4;
+}

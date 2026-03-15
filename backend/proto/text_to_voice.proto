@@ -1,0 +1,18 @@
+
+syntax = "proto3";
+
+package signify;
+
+option go_package = "./pkg/grpc_client/pb";
+
+service TextToVoice {
+    rpc Synthesize (SynthesisRequest) returns (SynthesisResponse);
+}
+
+message SynthesisRequest {
+    string text = 1;
+}
+
+message SynthesisResponse {
+    bytes audio_data = 1;
+}

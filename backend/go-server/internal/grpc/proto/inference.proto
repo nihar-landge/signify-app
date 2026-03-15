@@ -1,0 +1,25 @@
+syntax = "proto3";
+package inference;
+
+option go_package = "signify/internal/grpc/proto";
+
+service SignInference {
+  rpc Predict(PredictRequest) returns (PredictResponse);
+}
+
+message PredictRequest {
+  string session_id = 1;
+  // Tensor data transfer
+  bytes tensor_content = 2;     // Raw float32 bytes
+  repeated int32 shape = 3;     // Dimensions [Batch, Time, Landmarks, Coords]
+}
+
+message PredictResponse {
+  repeated Prediction top_k = 1;
+}
+
+message Prediction {
+  string label = 1;
+  float confidence = 2;
+  int32 class_index = 3;
+}

@@ -1,0 +1,196 @@
+import 'dart:async';
+import 'dart:convert';
+import 'package:flutter/foundation.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
+
+/// Configuration for the Signify backend
+class SignifyConfig {
+  // ── Compile-time defaults (overridable at build time via --dart-define) ──
+  static const bool _defaultUseNgrok = bool.fromEnvironment(
+    'SIGNIFY_USE_NGROK',
+    defaultValue: false,
+  );
+  static const String _defaultNgrokHost = String.fromEnvironment(
+    'SIGNIFY_NGROK_HOST',
+    defaultValue: 'impertinently-uncommingled-aimee.ngrok-free.dev',
+  );
+  static const int _defaultNgrokPort = int.fromEnvironment(
+    'SIGNIFY_NGROK_PORT',
+    defaultValue: 443,
+  );
+  static const String _defaultLocalIP = String.fromEnvironment(
+    'SIGNIFY_LOCAL_HOST',
+    defaultValue: '192.168.0.193',
+  );
+  static const int _defaultLocalPort = int.fromEnvironment(
+    'SIGNIFY_LOCAL_PORT',
+    defaultValue: 8080,
+  );
+
+  // ── Runtime overrides (set from SettingsNotifier) ────────────────────────
+  static bool? _runtimeUseNgrok;
+  static String? _runtimeNgrokHost;
+
+  /// Call this whenever backend settings change at runtime.
+  static void applyRuntimeSettings({
+    required bool useNgrok,
+    required String ngrokHost,
+  }) {
+    _runtimeUseNgrok = useNgrok;
+    _runtimeNgrokHost = ngrokHost;
+  }
+
+  // ── Effective values ─────────────────────────────────────────────────────
+  static bool get useNgrok => _runtimeUseNgrok ?? _defaultUseNgrok;
+  static String get ngrokHost => _runtimeNgrokHost ?? _defaultNgrokHost;
+  static int get ngrokPort => _defaultNgrokPort;
+  static String get localIP => _defaultLocalIP;
+  static int get localPort => _defaultLocalPort;
+
+  static String get serverIP => useNgrok ? ngrokHost : localIP;
+  static int get serverPort => useNgrok ? ngrokPort : localPort;
+
+  // For ngrok (port 443), omit the port — it's the default for wss/https and
+  // including it causes Dart's Uri to serialize a trailing '#' fragment which
+  // breaks the WebSocket upgrade handshake.
+  static String get rootUrl =>
+      useNgrok ? 'wss://$serverIP' : 'ws://$serverIP:$serverPort';
+  static String get apiBaseUrl =>
+      useNgrok ? 'https://$serverIP' : 'http://$serverIP:$serverPort';
+
+  static String get wsUrl => '$rootUrl/ws';
+  static String get callWsUrl => '$rootUrl/call';
+  static String get globalWsUrl => '$rootUrl/ws/app/global';
+  static String get healthUrl => '$apiBaseUrl/health';
+}
+
+/// Message types from the backend
+class BackendMessage {
+  final String type;
+  final String? text;
+  final Uint8List? audioData;
+
+  BackendMessage({required this.type, this.text, this.audioData});
+
+  factory BackendMessage.fromJson(Map<String, dynamic> json) {
+    Uint8List? audioData;
+    if (json['audio'] != null) {
+      try {
+        audioData = base64Decode(json['audio'] as String);
+      } catch (e) {
+        debugPrint('Error decoding base64 audio: $e');
+      }
+    }
+
+    return BackendMessage(
+      type: json['type'] ?? 'text',
+      text: json['text'] as String? ?? json['data'] as String?,
+      audioData: audioData,
+    );
+  }
+}
+
+/// WebSocket service for communicating with Signify backend
+class SignifyWebSocketService {
+  WebSocketChannel? _channel;
+  bool _isConnected = false;
+
+  // Stream controllers
+  final _textController = StreamController<String>.broadcast();
+  final _audioController = StreamController<Uint8List>.broadcast();
+  final _connectionController = StreamController<bool>.broadcast();
+
+  // Public streams
+  Stream<String> get textStream => _textController.stream;
+  Stream<Uint8List> get audioStream => _audioController.stream;
+  Stream<bool> get connectionStream => _connectionController.stream;
+
+  bool get isConnected => _isConnected;
+
+  /// Connect to the backend WebSocket
+  Future<bool> connect(String userID) async {
+    if (_isConnected) {
+      debugPrint('WebSocket already connected');
+      return true;
+    }
+
+    final wsUrl = '${SignifyConfig.wsUrl}/$userID';
+
+    try {
+      debugPrint('Connecting to WebSocket: $wsUrl');
+      _channel = WebSocketChannel.connect(Uri.parse(wsUrl));
+      await _channel!.ready.timeout(const Duration(seconds: 5));
+
+      _channel!.stream.listen(
+        _handleMessage,
+        onError: _handleError,
+        onDone: _handleDone,
+      );
+
+      _isConnected = true;
+      _connectionController.add(true);
+      debugPrint('WebSocket connected successfully');
+      return true;
+    } catch (e) {
+      debugPrint('WebSocket connection failed: $e');
+      _isConnected = false;
+      _connectionController.add(false);
+      return false;
+    }
+  }
+
+  /// Disconnect from the backend
+  void disconnect() {
+    _channel?.sink.close();
+    _channel = null;
+    _isConnected = false;
+    _connectionController.add(false);
+    debugPrint('WebSocket disconnected');
+  }
+
+  void _handleMessage(dynamic message) {
+    if (message is String) {
+      try {
+        final json = jsonDecode(message) as Map<String, dynamic>;
+        final backendMessage = BackendMessage.fromJson(json);
+
+        if (backendMessage.text != null &&
+            (backendMessage.type == 'text' ||
+                backendMessage.type == 'sign_final' ||
+                backendMessage.type == 'stt_final')) {
+          _textController.add(backendMessage.text!);
+        }
+
+        if (backendMessage.audioData != null) {
+          _audioController.add(backendMessage.audioData!);
+        }
+      } catch (e) {
+        debugPrint('Error parsing message: $e');
+      }
+    } else if (message is List<int>) {
+      _audioController.add(Uint8List.fromList(message));
+    }
+  }
+
+  void _handleError(dynamic error) {
+    debugPrint('WebSocket error: $error');
+    _isConnected = false;
+    _connectionController.add(false);
+  }
+
+  void _handleDone() {
+    debugPrint('WebSocket connection closed');
+    _isConnected = false;
+    _connectionController.add(false);
+  }
+
+  void dispose() {
+    disconnect();
+    _textController.close();
+    _audioController.close();
+    _connectionController.close();
+  }
+}
+
+/// Singleton instance for easy access
+final signifyService = SignifyWebSocketService();

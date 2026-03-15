@@ -1,0 +1,79 @@
+services:
+  # Go Backend
+  go-backend:
+    build:
+      context: ./go-server
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - POSTGRES_URL=postgres://user:pass@postgres:5432/signify?sslmode=disable
+      - SIGN_TO_TEXT_URL=sign-model:50051
+      - TEXT_TO_VOICE_URL=tts-model:50052
+      - ALLOW_TEST_SESSIONS=true
+      - DEEPGRAM_API_KEY=2074e37be3bcf68a5b04c982f55ac7b00d14d38c
+      - ELEVENLABS_API_KEY=sk_e434e7ac5059a927d43a4187b9039bbbf1fac66004d802d2
+      - ELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM
+      - PUBLIC_BASE_URL=https://impertinently-uncommingled-aimee.ngrok-free.dev
+      - PUBLIC_WS_URL=wss://impertinently-uncommingled-aimee.ngrok-free.dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+      sign-model:
+        condition: service_started
+      tts-model:
+        condition: service_started
+    healthcheck:
+      test: [ "CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - signify-network
+
+  # Model 1: Sign → Text
+  sign-model:
+    build:
+      context: ./inference-python
+      dockerfile: Dockerfile
+    ports:
+      - "50053:50051"
+    networks:
+      - signify-network
+
+  # Model 2: Text → Voice
+  tts-model:
+    build:
+      context: .
+      dockerfile: ./ml-services/text-to-voice/Dockerfile
+    ports:
+      - "50052:50052"
+    networks:
+      - signify-network
+
+  # PostgreSQL
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: signify
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U user -d signify" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - signify-network
+
+networks:
+  signify-network:
+    driver: bridge
+
+volumes:
+  postgres_data:

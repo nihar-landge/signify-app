@@ -1,0 +1,98 @@
+syntax = "proto3";
+
+package isl_classifier;
+
+option go_package = "github.com/signify/backend/proto/isl_classifier";
+
+// ISL Classifier Service for Indian Sign Language recognition
+service ISLClassifier {
+    // Recognize ISL sign from hand landmarks
+    rpc RecognizeLandmarks(LandmarksRequest) returns (RecognitionResponse);
+    
+    // Recognize ISL sign from holistic landmarks (543 points)
+    rpc RecognizeHolistic(HolisticRequest) returns (RecognitionResponse);
+    
+    // Stream recognition for real-time processing
+    rpc StreamRecognize(stream LandmarksRequest) returns (stream RecognitionResponse);
+    
+    // Get available labels
+    rpc GetLabels(Empty) returns (LabelsResponse);
+    
+    // Health check
+    rpc HealthCheck(Empty) returns (HealthResponse);
+}
+
+// Empty message for requests with no parameters
+message Empty {}
+
+// Request with normalized hand landmarks
+message LandmarksRequest {
+    // Session ID for tracking
+    string session_id = 1;
+    
+    // Left hand landmarks: 21 points × 2 coords (x, y) = 42 floats
+    repeated float left_hand = 2;
+    
+    // Right hand landmarks: 21 points × 2 coords (x, y) = 42 floats
+    repeated float right_hand = 3;
+    
+    // Timestamp in milliseconds
+    int64 timestamp = 4;
+}
+
+// Request with full MediaPipe Holistic landmarks
+message HolisticRequest {
+    // Session ID for tracking
+    string session_id = 1;
+    
+    // All 543 landmarks flattened: 543 × 3 coords = 1629 floats
+    // Order: Pose (33) + Face (468) + LeftHand (21) + RightHand (21)
+    repeated float landmarks = 2;
+    
+    // Timestamp in milliseconds
+    int64 timestamp = 3;
+}
+
+// Recognition response
+message RecognitionResponse {
+    // Recognized label (e.g., "a", "hello", "1")
+    string label = 1;
+    
+    // Confidence score (0.0 to 1.0)
+    float confidence = 2;
+    
+    // Top-K predictions
+    repeated Prediction top_k = 3;
+    
+    // Processing time in milliseconds
+    float processing_time_ms = 4;
+    
+    // Session ID echo
+    string session_id = 5;
+    
+    // Timestamp echo
+    int64 timestamp = 6;
+}
+
+// Single prediction
+message Prediction {
+    string label = 1;
+    float confidence = 2;
+}
+
+// Labels response
+message LabelsResponse {
+    // All available labels
+    repeated string labels = 1;
+    
+    // Total count
+    int32 count = 2;
+}
+
+// Health check response
+message HealthResponse {
+    bool healthy = 1;
+    string model_version = 2;
+    int32 labels_count = 3;
+    string message = 4;
+}
