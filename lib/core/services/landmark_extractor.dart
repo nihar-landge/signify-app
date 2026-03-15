@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:ui' show Size;
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
@@ -39,45 +38,69 @@ class LandmarkFrame {
       (rightHand != null && rightHand!.isNotEmpty) ||
       (pose != null && pose!.isNotEmpty);
 
+  // P7 fix: reuse a single pre-allocated 1629-element buffer so the GC is not
+  // hit with two large List allocations on every camera frame (~25/sec).
+  static final _holisticBuffer =
+      List<double>.filled(1629, 0.0, growable: false);
+
   /// Build the 1629-float array expected by the backend.
   /// Order: Pose (33×3=99) + Face (468×3=1404) + LeftHand (21×3=63) + RightHand (21×3=63)
   /// Sparse/missing landmarks are zero-filled.
+  /// Returns a copy of the shared buffer — safe to hold across async boundaries.
   List<double> toFullHolisticLandmarks() {
-    final out = <double>[];
+    final out = _holisticBuffer;
+    int i = 0;
 
     // 1. Pose (33 × 3 = 99)
     if (pose != null && pose!.length == 33) {
       for (final p in pose!) {
-        out.addAll(p.toList());
+        out[i++] = p.x;
+        out[i++] = p.y;
+        out[i++] = p.z;
       }
     } else {
-      out.addAll(List.filled(99, 0.0));
+      for (int k = 0; k < 99; k++) {
+        out[i++] = 0.0;
+      }
     }
 
     // 2. Face (468 × 3 = 1404) — ML Kit only gives a few key points,
     //    so we zero-fill the full 468-slot block.
-    out.addAll(List.filled(1404, 0.0));
+    for (int k = 0; k < 1404; k++) {
+      out[i++] = 0.0;
+    }
 
     // 3. Left hand (21 × 3 = 63)
     if (leftHand != null && leftHand!.length == 21) {
       for (final p in leftHand!) {
-        out.addAll(p.toList());
+        out[i++] = p.x;
+        out[i++] = p.y;
+        out[i++] = p.z;
       }
     } else {
-      out.addAll(List.filled(63, 0.0));
+      for (int k = 0; k < 63; k++) {
+        out[i++] = 0.0;
+      }
     }
 
     // 4. Right hand (21 × 3 = 63)
     if (rightHand != null && rightHand!.length == 21) {
       for (final p in rightHand!) {
-        out.addAll(p.toList());
+        out[i++] = p.x;
+        out[i++] = p.y;
+        out[i++] = p.z;
       }
     } else {
-      out.addAll(List.filled(63, 0.0));
+      for (int k = 0; k < 63; k++) {
+        out[i++] = 0.0;
+      }
     }
 
-    assert(out.length == 1629, 'Expected 1629 floats, got ${out.length}');
-    return out;
+    assert(i == 1629, 'Expected 1629 floats, wrote $i');
+    // Return a copy so the next frame's toFullHolisticLandmarks() call cannot
+    // mutate the shared buffer while a previous packet's jsonEncode() is still
+    // iterating it inside a .then() async callback.
+    return List<double>.of(out);
   }
 }
 
@@ -97,9 +120,6 @@ class LandmarkExtractor {
   bool _isInitialized = false;
   int _sequenceNumber = 0;
   bool _isProcessing = false;
-
-  final _landmarkController = StreamController<LandmarkFrame>.broadcast();
-  Stream<LandmarkFrame> get landmarkStream => _landmarkController.stream;
 
   bool get isInitialized => _isInitialized;
 
@@ -162,7 +182,8 @@ class LandmarkExtractor {
       );
 
       if (frame.hasData) {
-        _landmarkController.add(frame);
+        // Frame is returned directly to the caller (call_screen.dart) via the
+        // Future return value. The broadcast stream was unused (P15 fix).
       }
       return frame;
     } catch (e) {
@@ -312,7 +333,6 @@ class LandmarkExtractor {
   Future<void> dispose() async {
     await _poseDetector.close();
     _handLandmarker.dispose();
-    await _landmarkController.close();
     _isInitialized = false;
     debugPrint('LandmarkExtractor disposed');
   }

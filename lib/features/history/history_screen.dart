@@ -14,6 +14,11 @@ class HistoryScreen extends ConsumerStatefulWidget {
 class _HistoryScreenState extends ConsumerState<HistoryScreen> {
   final _searchCtrl = TextEditingController();
   String? _expandedId;
+  // P14 fix: track the last query that triggered a list refresh so we can
+  // assign a stable ValueKey to the ListView. When the key changes Flutter
+  // replaces the widget, resetting flutter_animate and replaying the stagger
+  // entrance. Within a single query result set no re-animation occurs.
+  String _animationKey = '';
 
   @override
   void dispose() {
@@ -25,6 +30,12 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final history = ref.watch(historyProvider);
+
+    // P14 fix: update the animation key when the dataset changes so the stagger
+    // entrance only replays on genuine query/load changes.
+    if (history.query != _animationKey) {
+      _animationKey = history.query;
+    }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -102,6 +113,9 @@ class _HistoryScreenState extends ConsumerState<HistoryScreen> {
                           ),
                         )
                       : ListView.builder(
+                          // P14 fix: stable key per query — animation only
+                          // replays when the query/dataset actually changes.
+                          key: ValueKey(_animationKey),
                           padding: const EdgeInsets.fromLTRB(20, 0, 20, 32),
                           itemCount: history.conversations.length,
                           itemBuilder: (context, i) {
@@ -298,13 +312,13 @@ class _ConversationCard extends StatelessWidget {
                       else
                         ConstrainedBox(
                           constraints: const BoxConstraints(maxHeight: 240),
-                          child: SingleChildScrollView(
+                          child: ListView.builder(
                             padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                            child: Column(
-                              children: messages!
-                                  .map((m) => _MsgBubble(msg: m))
-                                  .toList(),
-                            ),
+                            // P10 fix: build message widgets on demand instead
+                            // of eagerly in a Column.
+                            itemCount: messages!.length,
+                            itemBuilder: (_, i) =>
+                                _MsgBubble(msg: messages![i]),
                           ),
                         ),
                     ],

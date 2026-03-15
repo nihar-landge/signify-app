@@ -58,7 +58,8 @@ ThemeData lightTheme = ThemeData(
   scaffoldBackgroundColor: AppColors.backgroundLight,
   cardColor: AppColors.cardLight,
   dividerColor: AppColors.borderLight,
-  fontFamily: 'Inter',
+  // Inter is not bundled in pubspec.yaml — removed to prevent font fallback
+  // warnings and let Flutter use the system sans-serif (P20 fix).
   textTheme: _buildTextTheme(AppColors.foregroundLight),
   appBarTheme: AppBarTheme(
     backgroundColor: AppColors.cardLight.withValues(alpha: 0.85),
@@ -170,7 +171,6 @@ ThemeData darkTheme = ThemeData(
   scaffoldBackgroundColor: AppColors.backgroundDark,
   cardColor: AppColors.cardDark,
   dividerColor: AppColors.borderDark,
-  fontFamily: 'Inter',
   textTheme: _buildTextTheme(AppColors.foregroundDark),
   appBarTheme: AppBarTheme(
     backgroundColor: AppColors.cardDark.withValues(alpha: 0.85),
@@ -294,7 +294,8 @@ TextTheme _buildTextTheme(Color baseColor) {
     ),
     bodyLarge: TextStyle(fontSize: 15, color: baseColor),
     bodyMedium: TextStyle(fontSize: 13, color: baseColor),
-    bodySmall: TextStyle(fontSize: 11, color: baseColor.withValues(alpha: 0.65)),
+    bodySmall:
+        TextStyle(fontSize: 11, color: baseColor.withValues(alpha: 0.65)),
     labelSmall: TextStyle(
       fontSize: 10,
       fontWeight: FontWeight.w600,

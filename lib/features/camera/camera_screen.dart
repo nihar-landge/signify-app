@@ -17,12 +17,10 @@ import '../../core/services/websocket_service.dart';
 import '../../core/theme/app_theme.dart';
 
 // ---------------------------------------------------------------------------
-// Provider – holds the list of available cameras (resolved once at startup).
+// Provider – use the shared availableCamerasProvider from providers.dart so
+// that the platform channel is called only once across all screens (P8 fix).
 // ---------------------------------------------------------------------------
-final _availableCamerasProvider =
-    FutureProvider<List<CameraDescription>>((ref) async {
-  return availableCameras();
-});
+final _availableCamerasProvider = availableCamerasProvider;
 
 // ---------------------------------------------------------------------------
 // CameraScreen
@@ -67,6 +65,38 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _requestCameraPermission();
+  }
+
+  @override
+  void deactivate() {
+    // Called when the widget is removed from the tree (tab navigation away).
+    // Stop the image stream and release the pipeline so that the Call tab can
+    // acquire the same physical camera without a CameraException.  We do NOT
+    // dispose the CameraController here — that stays alive so the preview
+    // resumes instantly when the user returns to this tab.
+    if (_recording) {
+      _stopRecordingCleanup();
+      // Keep _recording = true so the UI reflects "was recording" on resume
+      // and activate() can restart the stream automatically.
+      _wsConnected = false;
+    } else {
+      // Not recording — still stop any lingering image stream to be safe.
+      _controller?.stopImageStream().catchError((_) {});
+    }
+    super.deactivate();
+  }
+
+  @override
+  void activate() {
+    super.activate();
+    // Called when this widget is re-inserted into the tree (tab navigated back).
+    // If the user was recording before they left, restart the pipeline.
+    if (_recording) {
+      _recording = false; // reset so _startRecording() doesn't early-exit
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _startRecording();
+      });
+    }
   }
 
   @override
@@ -305,10 +335,13 @@ class _CameraScreenState extends ConsumerState<CameraScreen>
     final cs = Theme.of(context).colorScheme;
     final language = ref.watch(selectedLanguageProvider);
 
-    // Trigger camera init once cameras are loaded (if permission already granted)
+    // Trigger camera init once cameras are loaded (if permission already granted).
+    // Deferred to post-frame to avoid calling setState() during a build pass.
     ref.listen(_availableCamerasProvider, (_, next) {
       if (next.hasValue && _cameraPermissionGranted && _controller == null) {
-        _pickAndInitCamera();
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _pickAndInitCamera();
+        });
       }
     });
 

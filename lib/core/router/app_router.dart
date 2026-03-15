@@ -67,9 +67,15 @@ class AppShell extends ConsumerWidget {
         icon: Icons.settings_rounded, label: 'Settings', path: '/settings'),
   ];
 
-  int _indexForPath(String location) {
-    final match = _tabs.indexWhere((t) => location.startsWith(t.path));
-    return match < 0 ? 0 : match;
+  // P11 fix: cache computed index so repeated builds with the same location
+  // don't re-run indexWhere on every navigation event.
+  static final _indexCache = <String, int>{};
+
+  static int _indexForPath(String location) {
+    return _indexCache.putIfAbsent(location, () {
+      final match = _tabs.indexWhere((t) => location.startsWith(t.path));
+      return match < 0 ? 0 : match;
+    });
   }
 
   @override
@@ -81,8 +87,13 @@ class AppShell extends ConsumerWidget {
     // Listen for incoming calls and show a dialog
     ref.listen(incomingCallStreamProvider, (_, next) {
       next.whenData((event) {
-        final fromNumber = event['from'] as String? ?? 'Unknown';
-        final sessionId = event['sessionId'] as String? ?? '';
+        // Backend AppEvent uses 'message' for the caller number and 'text'
+        // for the session ID (matching the AppEvent struct JSON tags).
+        final fromNumber = event['message'] as String? ??
+            event['from'] as String? ??
+            'Unknown';
+        final sessionId =
+            event['text'] as String? ?? event['sessionId'] as String? ?? '';
         showDialog<void>(
           context: context,
           barrierDismissible: false,

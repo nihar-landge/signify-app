@@ -404,24 +404,56 @@ class _BackendConfigCard extends StatefulWidget {
 
 class _BackendConfigCardState extends State<_BackendConfigCard> {
   late TextEditingController _hostCtrl;
+  late TextEditingController _localIPCtrl;
   late bool _useNgrok;
 
   @override
   void initState() {
     super.initState();
     _hostCtrl = TextEditingController(text: widget.settings.ngrokHost);
+    _localIPCtrl = TextEditingController(text: widget.settings.localIP);
     _useNgrok = widget.settings.useNgrok;
+  }
+
+  // P19 fix: keep local controller in sync when parent widget rebuilds with
+  // updated settings (e.g. settings loaded from prefs after widget mounts).
+  @override
+  void didUpdateWidget(_BackendConfigCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.settings.ngrokHost != widget.settings.ngrokHost) {
+      // Only update when cursor is not active to avoid fighting with the user.
+      if (!_hostCtrl.selection.isValid ||
+          _hostCtrl.selection.baseOffset == _hostCtrl.selection.extentOffset) {
+        _hostCtrl.text = widget.settings.ngrokHost;
+      }
+    }
+    if (oldWidget.settings.localIP != widget.settings.localIP) {
+      if (!_localIPCtrl.selection.isValid ||
+          _localIPCtrl.selection.baseOffset ==
+              _localIPCtrl.selection.extentOffset) {
+        _localIPCtrl.text = widget.settings.localIP;
+      }
+    }
+    if (oldWidget.settings.useNgrok != widget.settings.useNgrok) {
+      _useNgrok = widget.settings.useNgrok;
+    }
   }
 
   @override
   void dispose() {
     _hostCtrl.dispose();
+    _localIPCtrl.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    // Compute the active URL for display so the user always knows what
+    // IP:port will be used for the next connection.
+    final activeUrl = _useNgrok
+        ? 'wss://${_hostCtrl.text.trim()}'
+        : 'ws://${_localIPCtrl.text.trim()}:8080';
     return _SettingsCard(
       icon: Icons.cable_rounded,
       iconColor: AppColors.primary,
@@ -433,6 +465,18 @@ class _BackendConfigCardState extends State<_BackendConfigCard> {
         children: [
           const SizedBox(height: 4),
           TextField(
+            controller: _localIPCtrl,
+            decoration: const InputDecoration(
+              labelText: 'Local IP (LAN)',
+              hintText: 'e.g. 10.213.158.247',
+              isDense: true,
+            ),
+            keyboardType: TextInputType.number,
+            style: const TextStyle(fontSize: 13),
+            onChanged: (_) => setState(() {}),
+          ),
+          const SizedBox(height: 10),
+          TextField(
             controller: _hostCtrl,
             decoration: const InputDecoration(
               labelText: 'ngrok Host',
@@ -440,6 +484,7 @@ class _BackendConfigCardState extends State<_BackendConfigCard> {
               isDense: true,
             ),
             style: const TextStyle(fontSize: 13),
+            onChanged: (_) => setState(() {}),
           ),
           const SizedBox(height: 10),
           Row(
@@ -460,13 +505,11 @@ class _BackendConfigCardState extends State<_BackendConfigCard> {
           ),
           const SizedBox(height: 4),
           Text(
-            'Note: The active connection uses compile-time constants '
-            '(SIGNIFY_USE_NGROK / SIGNIFY_NGROK_HOST). '
-            'These settings are saved for display purposes.',
+            'Active URL: $activeUrl',
             style: TextStyle(
               fontSize: 10,
-              color: cs.onSurface.withValues(alpha: 0.45),
-              fontStyle: FontStyle.italic,
+              color: cs.onSurface.withValues(alpha: 0.55),
+              fontFamily: 'monospace',
             ),
           ),
           const SizedBox(height: 10),
@@ -477,6 +520,7 @@ class _BackendConfigCardState extends State<_BackendConfigCard> {
                 widget.notifier.setBackendConfig(
                   ngrokHost: _hostCtrl.text.trim(),
                   useNgrok: _useNgrok,
+                  localIP: _localIPCtrl.text.trim(),
                 );
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(

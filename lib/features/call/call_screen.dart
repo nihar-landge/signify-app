@@ -15,11 +15,11 @@ import '../../core/services/mic_stream_client.dart';
 import '../../core/services/websocket_service.dart';
 import '../../core/theme/app_theme.dart';
 
-// Available cameras resolved once for the call screen.
-final _callAvailableCamerasProvider =
-    FutureProvider<List<CameraDescription>>((ref) async {
-  return availableCameras();
-});
+// Available cameras resolved once — shared with camera_screen.dart via
+// availableCamerasProvider defined in providers.dart.
+// Keep a local alias for backward compatibility within this file.
+// (The real provider lives in providers.dart to avoid duplicate platform calls.)
+final _callAvailableCamerasProvider = availableCamerasProvider;
 
 class CallScreen extends ConsumerStatefulWidget {
   const CallScreen({super.key});
@@ -40,6 +40,28 @@ class _CallScreenState extends ConsumerState<CallScreen> {
     }
 
     return const _DialPadView();
+  }
+}
+
+/// P4 fix: isolated Consumer that only rebuilds on every 1-second timer tick,
+/// not the entire _InCallView.
+class _CallTimer extends ConsumerWidget {
+  const _CallTimer();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final seconds = ref.watch(callSecondsProvider);
+    final m = seconds ~/ 60;
+    final s = seconds % 60;
+    final formatted = '$m:${s.toString().padLeft(2, '0')}';
+    return Text(
+      formatted,
+      style: const TextStyle(
+        fontFamily: 'monospace',
+        fontSize: 12,
+        fontWeight: FontWeight.w600,
+      ),
+    );
   }
 }
 
@@ -235,15 +257,22 @@ class _DialPadView extends ConsumerWidget {
   }
 }
 
-class _DialKey extends ConsumerWidget {
+// P9 fix: _DialKey only calls ref.read in a tap callback — no need to be a
+// ConsumerWidget (which would subscribe to provider changes on every tap).
+class _DialKey extends StatelessWidget {
   const _DialKey({required this.digit});
   final String digit;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return GestureDetector(
-      onTap: () => ref.read(callProvider.notifier).appendDigit(digit),
+      onTap: () {
+        // Use ProviderScope.containerOf to read without subscribing.
+        ProviderScope.containerOf(context, listen: false)
+            .read(callProvider.notifier)
+            .appendDigit(digit);
+      },
       child: Container(
         decoration: BoxDecoration(
           color: cs.surface,
@@ -298,6 +327,10 @@ class _InCallViewState extends ConsumerState<_InCallView>
   AudioPlayer? _audioPlayer;
   StreamSubscription<dynamic>? _audioSub;
   bool _wsConnected = false;
+  // Generation counter: incremented on every _stopLandmarkPipeline() call.
+  // _startLandmarkPipeline() checks this after each await to abort if a newer
+  // pipeline was started (prevents ghost _wsClient instances on camera flips).
+  int _pipelineGen = 0;
 
   // Push-to-Sign state
   bool _pushing = false;
@@ -305,6 +338,9 @@ class _InCallViewState extends ConsumerState<_InCallView>
   // Hold-to-Speak state (test mode only)
   MicStreamClient? _micClient;
   bool _speaking = false;
+
+  // Caption count — tracked to scroll only when new captions arrive.
+  int _lastCaptionCount = 0;
 
   @override
   void initState() {
@@ -352,12 +388,22 @@ class _InCallViewState extends ConsumerState<_InCallView>
   }
 
   Future<void> _initCamera(CameraDescription description) async {
+    debugPrint('Camera: _initCamera(${description.name}) entered');
     setState(() {
       _cameraInitializing = true;
       _cameraError = false;
     });
+
+    // Stop the landmark pipeline (image stream + WS) before touching the camera.
+    // Must happen before prev.dispose() — disposing a controller with an active
+    // image stream throws a CameraException on Android.
+    _stopLandmarkPipeline();
+
     final prev = _controller;
-    if (prev != null) await prev.dispose();
+    if (prev != null) {
+      debugPrint('Camera: disposing previous controller');
+      await prev.dispose();
+    }
 
     final controller = CameraController(
       description,
@@ -366,7 +412,9 @@ class _InCallViewState extends ConsumerState<_InCallView>
       imageFormatGroup: ImageFormatGroup.yuv420,
     );
     try {
+      debugPrint('Camera: initializing new controller…');
       await controller.initialize();
+      debugPrint('Camera: controller initialized');
       if (!mounted) {
         await controller.dispose();
         return;
@@ -377,7 +425,8 @@ class _InCallViewState extends ConsumerState<_InCallView>
       });
       // Start streaming landmarks as soon as camera is ready.
       _startLandmarkPipeline();
-    } on CameraException catch (_) {
+    } on CameraException catch (e) {
+      debugPrint('Camera: CameraException during init: $e');
       await controller.dispose();
       if (!mounted) return;
       setState(() {
@@ -398,32 +447,73 @@ class _InCallViewState extends ConsumerState<_InCallView>
   // ── Landmark pipeline ────────────────────────────────────────────────────────
 
   Future<void> _startLandmarkPipeline() async {
+    debugPrint('Pipeline: _startLandmarkPipeline() entered');
+    final myGen = ++_pipelineGen;
     final controller = _controller;
-    if (controller == null || !controller.value.isInitialized) return;
+    if (controller == null || !controller.value.isInitialized) {
+      debugPrint('Pipeline: ABORT — controller null or not initialized');
+      return;
+    }
 
     final sessionId = ref.read(callProvider).sessionId;
     final language = ref.read(selectedLanguageProvider);
-    if (sessionId.isEmpty) return;
+    debugPrint('Pipeline: sessionId="$sessionId" language="$language"');
+    if (sessionId.isEmpty) {
+      debugPrint('Pipeline: ABORT — sessionId is empty');
+      return;
+    }
 
+    debugPrint('Pipeline: initializing LandmarkExtractor…');
     _extractor = LandmarkExtractor();
     await _extractor!.initialize();
 
+    // Abort if a newer pipeline superseded this one while we were awaiting.
+    if (_pipelineGen != myGen) {
+      debugPrint('Pipeline: cancelled after initialize (gen mismatch)');
+      _extractor?.dispose();
+      _extractor = null;
+      return;
+    }
+    debugPrint('Pipeline: LandmarkExtractor ready');
+
     _audioPlayer = AudioPlayer();
 
+    final wsUrl = SignifyConfig.rootUrl;
+    debugPrint('Pipeline: creating LandmarkWebSocketClient url=$wsUrl');
     _wsClient = LandmarkWebSocketClient(
-      serverUrl: SignifyConfig.rootUrl,
+      serverUrl: wsUrl,
       sessionId: sessionId,
       requestLanguage: language,
     );
 
     _wsClient!.onConnected = () {
+      debugPrint('Pipeline: WS onConnected');
       if (mounted) setState(() => _wsConnected = true);
     };
     _wsClient!.onDisconnected = () {
+      debugPrint('Pipeline: WS onDisconnected');
       if (mounted) setState(() => _wsConnected = false);
     };
 
-    // Subscribe to TTS audio from the events WS (sign_final.audio field)
+    // Wire sign_partial / sign_final events from the landmarks WS into the
+    // call provider's caption list so they appear in the conversation window.
+    _wsClient!.onSignEvent = (text, isFinal) {
+      debugPrint('Pipeline: onSignEvent text="$text" isFinal=$isFinal');
+      if (!mounted) return;
+      ref.read(callProvider.notifier).addSignCaption(text, isFinal: isFinal);
+    };
+
+    // TTS audio arrives on the landmarks WS sign_final.audio field — play it.
+    _wsClient!.onAudioReceived = (Uint8List audioBytes) async {
+      debugPrint('Pipeline: onAudioReceived ${audioBytes.length} bytes');
+      try {
+        if (ref.read(settingsProvider).voiceOutput) {
+          await _audioPlayer?.play(BytesSource(audioBytes));
+        }
+      } catch (_) {}
+    };
+
+    // Also subscribe to TTS audio from the events WS (real call path).
     final audioStream = ref.read(callProvider.notifier).audioStream;
     if (audioStream != null) {
       _audioSub = audioStream.listen((audioBytes) async {
@@ -435,21 +525,39 @@ class _InCallViewState extends ConsumerState<_InCallView>
       });
     }
 
+    debugPrint('Pipeline: calling _wsClient.connect()…');
     await _wsClient!.connect();
+
+    // Abort if superseded while awaiting connect().
+    if (_pipelineGen != myGen) {
+      debugPrint('Pipeline: cancelled after connect (gen mismatch)');
+      _wsClient?.disconnect();
+      _wsClient = null;
+      return;
+    }
+    debugPrint(
+        'Pipeline: connect() returned, isConnected=${_wsClient?.isConnected}');
 
     // In test mode, set up mic client for the Hold-to-Speak STT test pipeline.
     if (ref.read(callProvider).isTestMode) {
       final micPerm = await Permission.microphone.request();
+      debugPrint('Pipeline: mic permission=${micPerm.name}');
+      if (_pipelineGen != myGen) {
+        debugPrint('Pipeline: cancelled after mic permission (gen mismatch)');
+        return;
+      }
       if (micPerm.isGranted) {
         _micClient = MicStreamClient(
           sessionId: sessionId,
           sttLanguage: ref.read(sttLanguageProvider),
         );
+        debugPrint('Pipeline: MicStreamClient created');
       } else {
-        debugPrint('MicStreamClient: microphone permission denied');
+        debugPrint('Pipeline: WARN — microphone permission denied');
       }
     }
 
+    debugPrint('Pipeline: starting camera image stream…');
     await controller.startImageStream((CameraImage image) {
       _extractor?.processImage(image, controller.description).then((frame) {
         if (frame == null) return;
@@ -464,9 +572,14 @@ class _InCallViewState extends ConsumerState<_InCallView>
         );
       });
     });
+    debugPrint('Pipeline: image stream started');
   }
 
   void _stopLandmarkPipeline() {
+    // Invalidate any in-flight _startLandmarkPipeline() coroutine so it
+    // abandons its work at the next await checkpoint rather than creating a
+    // ghost _wsClient with a stale sessionId.
+    _pipelineGen++;
     _controller?.stopImageStream().catchError((_) {});
     _wsClient?.disconnect();
     _wsClient = null;
@@ -624,20 +737,28 @@ class _InCallViewState extends ConsumerState<_InCallView>
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    // Watch only the fields that affect the full layout (not callSeconds — that
+    // is isolated in _CallTimer to prevent rebuilding the whole view every tick).
     final call = ref.watch(callProvider);
-    final notifier = ref.read(callProvider.notifier);
     final language = ref.watch(selectedLanguageProvider);
+    // Watch captions via the scoped provider so only the caption list rebuilds
+    // when a new caption arrives (not the camera preview, controls, etc.).
+    final captions = ref.watch(callCaptionsProvider);
 
-    // Auto-scroll captions
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-        );
-      }
-    });
+    // Auto-scroll captions only when new ones arrive (P3 fix: not every build).
+    final captionCount = captions.length;
+    if (captionCount != _lastCaptionCount) {
+      _lastCaptionCount = captionCount;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_scrollController.hasClients) {
+          _scrollController.animateTo(
+            _scrollController.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOut,
+          );
+        }
+      });
+    }
 
     // When cameras list resolves, pick and init camera if permission was already
     // granted (handles the race where permission resolves before the
@@ -687,14 +808,9 @@ class _InCallViewState extends ConsumerState<_InCallView>
                 children: [
                   _ConnectedBadge(),
                   const SizedBox(width: 8),
-                  Text(
-                    notifier.formattedTime,
-                    style: const TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
+                  // P4 fix: timer display is isolated in its own Consumer so
+                  // the 1-second tick only rebuilds this small widget.
+                  const _CallTimer(),
                 ],
               ),
             ],
@@ -745,9 +861,9 @@ class _InCallViewState extends ConsumerState<_InCallView>
                     child: ListView.builder(
                       controller: _scrollController,
                       padding: const EdgeInsets.all(12),
-                      itemCount: call.captions.length,
+                      itemCount: captions.length,
                       itemBuilder: (context, i) =>
-                          _CaptionBubble(caption: call.captions[i]),
+                          _CaptionBubble(caption: captions[i]),
                     ),
                   ),
                 ],

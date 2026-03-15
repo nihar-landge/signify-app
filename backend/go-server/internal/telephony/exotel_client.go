@@ -71,7 +71,7 @@ func (ec *ExotelClient) PlaceCall(ctx context.Context, toNumber string) (*Call, 
 	// Exotel Connect API requires a 'From' (Exotel virtual number) and 'To' (Customer number)
 	// Usually, for Signify, we want the call to connect to a Flow or a URL that handles the media stream.
 	// We use the 'Url' parameter or 'FlowId'.
-	
+
 	// For this implementation, we'll use the newer connect.json endpoint which is more flexible for voicebots.
 	connectURL := fmt.Sprintf("https://api.exotel.com/v1/Accounts/%s/Calls/connect.json", ec.config.AccountSID)
 
@@ -85,8 +85,9 @@ func (ec *ExotelClient) PlaceCall(ctx context.Context, toNumber string) (*Call, 
 	// For streaming/voicebot, we need to point Exotel to our incoming webhook
 	webhookURL := fmt.Sprintf("%s/exotel/incoming", ec.config.PublicBaseURL)
 
-	form := "From=" + fromNumber + "&To=" + toNumber + "&Url=" + webhookURL + "&CallType=transcribe"
-	
+	// CallType=trans = transactional (required for voicebot/streaming calls in India)
+	form := "From=" + fromNumber + "&To=" + toNumber + "&Url=" + webhookURL + "&CallType=trans"
+
 	req, err := http.NewRequestWithContext(ctx, "POST", connectURL, strings.NewReader(form))
 	if err != nil {
 		return nil, err
@@ -141,8 +142,9 @@ func (ec *ExotelClient) PlaceCallWithSession(ctx context.Context, sessionID, toN
 
 	webhookURL := fmt.Sprintf("%s/exotel/incoming?sessionId=%s", ec.config.PublicBaseURL, sessionID)
 
-	form := "From=" + fromNumber + "&To=" + toNumber + "&Url=" + webhookURL + "&CallType=transcribe"
-	
+	// CallType=trans = transactional (required for voicebot/streaming calls in India)
+	form := "From=" + fromNumber + "&To=" + toNumber + "&Url=" + webhookURL + "&CallType=trans"
+
 	req, err := http.NewRequestWithContext(ctx, "POST", connectURL, strings.NewReader(form))
 	if err != nil {
 		return nil, err

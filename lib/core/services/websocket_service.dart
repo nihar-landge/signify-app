@@ -1,7 +1,6 @@
-import 'dart:async';
 import 'dart:convert';
-import 'package:flutter/foundation.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
+import 'dart:typed_data';
+import 'package:flutter/foundation.dart' show debugPrint;
 
 /// Configuration for the Signify backend
 class SignifyConfig {
@@ -20,7 +19,7 @@ class SignifyConfig {
   );
   static const String _defaultLocalIP = String.fromEnvironment(
     'SIGNIFY_LOCAL_HOST',
-    defaultValue: '192.168.0.193',
+    defaultValue: '10.213.158.247',
   );
   static const int _defaultLocalPort = int.fromEnvironment(
     'SIGNIFY_LOCAL_PORT',
@@ -30,21 +29,24 @@ class SignifyConfig {
   // ── Runtime overrides (set from SettingsNotifier) ────────────────────────
   static bool? _runtimeUseNgrok;
   static String? _runtimeNgrokHost;
+  static String? _runtimeLocalIP;
 
   /// Call this whenever backend settings change at runtime.
   static void applyRuntimeSettings({
     required bool useNgrok,
     required String ngrokHost,
+    required String localIP,
   }) {
     _runtimeUseNgrok = useNgrok;
     _runtimeNgrokHost = ngrokHost;
+    _runtimeLocalIP = localIP.trim().isEmpty ? null : localIP.trim();
   }
 
   // ── Effective values ─────────────────────────────────────────────────────
   static bool get useNgrok => _runtimeUseNgrok ?? _defaultUseNgrok;
   static String get ngrokHost => _runtimeNgrokHost ?? _defaultNgrokHost;
   static int get ngrokPort => _defaultNgrokPort;
-  static String get localIP => _defaultLocalIP;
+  static String get localIP => _runtimeLocalIP ?? _defaultLocalIP;
   static int get localPort => _defaultLocalPort;
 
   static String get serverIP => useNgrok ? ngrokHost : localIP;
@@ -90,107 +92,5 @@ class BackendMessage {
   }
 }
 
-/// WebSocket service for communicating with Signify backend
-class SignifyWebSocketService {
-  WebSocketChannel? _channel;
-  bool _isConnected = false;
-
-  // Stream controllers
-  final _textController = StreamController<String>.broadcast();
-  final _audioController = StreamController<Uint8List>.broadcast();
-  final _connectionController = StreamController<bool>.broadcast();
-
-  // Public streams
-  Stream<String> get textStream => _textController.stream;
-  Stream<Uint8List> get audioStream => _audioController.stream;
-  Stream<bool> get connectionStream => _connectionController.stream;
-
-  bool get isConnected => _isConnected;
-
-  /// Connect to the backend WebSocket
-  Future<bool> connect(String userID) async {
-    if (_isConnected) {
-      debugPrint('WebSocket already connected');
-      return true;
-    }
-
-    final wsUrl = '${SignifyConfig.wsUrl}/$userID';
-
-    try {
-      debugPrint('Connecting to WebSocket: $wsUrl');
-      _channel = WebSocketChannel.connect(Uri.parse(wsUrl));
-      await _channel!.ready.timeout(const Duration(seconds: 5));
-
-      _channel!.stream.listen(
-        _handleMessage,
-        onError: _handleError,
-        onDone: _handleDone,
-      );
-
-      _isConnected = true;
-      _connectionController.add(true);
-      debugPrint('WebSocket connected successfully');
-      return true;
-    } catch (e) {
-      debugPrint('WebSocket connection failed: $e');
-      _isConnected = false;
-      _connectionController.add(false);
-      return false;
-    }
-  }
-
-  /// Disconnect from the backend
-  void disconnect() {
-    _channel?.sink.close();
-    _channel = null;
-    _isConnected = false;
-    _connectionController.add(false);
-    debugPrint('WebSocket disconnected');
-  }
-
-  void _handleMessage(dynamic message) {
-    if (message is String) {
-      try {
-        final json = jsonDecode(message) as Map<String, dynamic>;
-        final backendMessage = BackendMessage.fromJson(json);
-
-        if (backendMessage.text != null &&
-            (backendMessage.type == 'text' ||
-                backendMessage.type == 'sign_final' ||
-                backendMessage.type == 'stt_final')) {
-          _textController.add(backendMessage.text!);
-        }
-
-        if (backendMessage.audioData != null) {
-          _audioController.add(backendMessage.audioData!);
-        }
-      } catch (e) {
-        debugPrint('Error parsing message: $e');
-      }
-    } else if (message is List<int>) {
-      _audioController.add(Uint8List.fromList(message));
-    }
-  }
-
-  void _handleError(dynamic error) {
-    debugPrint('WebSocket error: $error');
-    _isConnected = false;
-    _connectionController.add(false);
-  }
-
-  void _handleDone() {
-    debugPrint('WebSocket connection closed');
-    _isConnected = false;
-    _connectionController.add(false);
-  }
-
-  void dispose() {
-    disconnect();
-    _textController.close();
-    _audioController.close();
-    _connectionController.close();
-  }
-}
-
-/// Singleton instance for easy access
-final signifyService = SignifyWebSocketService();
+// P17 fix: SignifyWebSocketService and its `signifyService` singleton were dead
+// code (never referenced outside this file). Removed to reduce bundle size.
